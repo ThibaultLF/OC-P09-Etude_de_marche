@@ -1,0 +1,414 @@
+---
+title: "Projet 9:<br /> Produisez une étude de marché avec R"
+author: "Thibault Lelievre"
+output: html_notebook
+---
+
+<style>
+
+body {
+text-align: justify;
+}
+
+.title.toc-ignore{
+text-align: center;
+color: blue;
+border: 1px blue solid;
+}
+
+.author {
+text-align: right;
+color: #5BA8E1;
+}
+
+h1 a{
+color: black;
+}
+
+h2 a{
+color: black;
+margin-left: 50px;
+}
+
+td:first-child{
+position: sticky;
+left: 0;
+background-color: #FFFFFF;
+z-index: 20;
+}
+</style>
+
+```{r include = FALSE}
+rm(list = ls())
+library(FactoMineR)
+library(fpc)
+library(factoextra)
+library(corrplot)
+library(plotly)
+library(knitr)
+library(kableExtra)
+library(pheatmap)
+library(RColorBrewer)
+library(questionr)
+```
+
+# Scénario
+Vous travaillez chez *La poule qui chante*, une entreprise française agroalimentaire. Elle souhaite se développer à l'international. Votre objectif sera de proposer une première analyse des groupements de pays que l'on peut cibler pour exporter nos poulets. Pour cela, il faudra récupérer des données supplémentaires à celles fournies provenant de la FAO
+
+Pour la partie analyse, il est demandé d'utiliser la classification ascendante hiérarchique, avec un dendrogramme comme visualisation, et également la méthode des k-means pour comparer les résultats des deux méthodes de clustering. Il est également possible de réaliser une ACP. 
+
+Dans ce deuxième notebook, nous allons traiter la partie analyse en utilisant différentes méthodes de clustering et de l'ACP sur les données travaillées dans le premier notebook.
+
+# Sommaire
+ - <a href="#C1">Importation des données</a>
+ - <a href="#C2">Corrélation</a>
+ - <a href="#C3">Analyse en composante principale</a>
+ - <a href="#C4">Classification ascendante hiérarchique</a>
+ <ul>
+  <li> <a href="#D1">Consolidation via K-Means</a> </li>
+ </ul>
+ - <a href="#C5">K-Means</a>
+ - <a href="#C6">Choix des clusters</a>
+ <ul>
+  <li> <a href="#D2">Choix du cluster *Européen*</a> </li>
+  <li> <a href="#D3">Choix du cluster *Importateur*</a> </li>
+ </ul>
+
+# <a name="C1">Importation</a>
+Pour commencer, nous allons importer la table créée dans le premier notebook. Vérifions en même temps le type des données après l'importation.
+```{r}
+BDD <- read.table("Données/BDDindnoscale.csv", header = T, row.names = 1, sep = ",", dec = ".")
+
+kable(summary(BDD)) %>% scroll_box(width = "100%")
+```
+<br />Nous allons maintenant modifier le nom des colonnes et le type des colonnes "comlang" et "EEE"
+```{r}
+colnames(BDD) <- c("Code Pays", "Pays", "Production", "Importation", "Nourriture", "Taux de croissance population", "Population", "Business score", "PIB US$2015", "Coût import conformité", "Coût import document", "Stabilité politique", "Langue commune", "Distance", "EEE")
+BDDq <- BDD[,-c(1:2)]
+BDDq[,c("Langue commune", "EEE")] <- apply(BDDq[,c("Langue commune", "EEE")], 2, function(x){as.character(x)})
+```
+
+# <a name="C2">Corrélation</a>
+Nous pouvons alors regarder la corrélation entre les variables.
+```{r fig.width = 20, fig.height = 20}
+pairs(BDDq[,-c(11,13)])
+```
+
+```{r fig.width = 20}
+corrplot(cor(BDDq[,-c(11,13)], method = "spearman"))
+
+```
+
+
+
+# <a name="C3">Analyse en composante principale</a>
+
+Avant de réaliser notre classification, nous allons effectuer une analyse en composante principale ce qui rend la classification plus stable.
+
+```{r}
+res.PCA <- PCA(BDDq[,-c(11,13)], ncp = 5, scale.unit = T, graph = F)
+plot.PCA(res.PCA, choix = 'var', title = "Graphe des variables de l'ACP")
+```
+
+```{r}
+kable(round(res.PCA$eig,2)) %>% kable_paper()
+```
+On explique 50% d'inertie avec le premier plan et en conservant 5 dimensions nous expliquons près de 80% de la variance du jeu de données initial.
+
+```{r}
+# Fonction pareto
+pareto = function(x, bar.col="cyan", line.col="red", pch=16, h=80, h.lty=3,main="Eboulis des valeurs propres",xlab="Dimensions",ylab="Variance expliquée (%)", names.arg=c(1:length(x)), ylab2="Cumul",mar=c(5,4,3,4)) {
+if (length(names.arg)>0) {names.arg=names.arg[order(x, decreasing = TRUE)]}
+x = sort(x,decreasing=T); x = x*100/sum(x);
+cumul = (cumsum(x)/sum(x))*100
+simulation = barplot(x,col=bar.col, plot = F)
+par(mar=mar)
+barplot(x,col=bar.col,axes=F,ylim=c(0,100),main=main,xlab=xlab,ylab="",names.arg=names.arg)
+#par(new=TRUE)
+points(simulation,cumul,pch=pch,col=line.col,xlab="",ylab="",type="o")
+abline(h=h,lty=h.lty) ; box()
+axis(2) ; axis(4,c(0,20,40,60,80,100),col.axis=line.col,col=line.col)
+mtext(ylab,side=2,line=2,cex=1.2) ; mtext(ylab2,side=4,col="red",line=2,cex=1.2)
+result = c(x , cumul) ; result = matrix(result,nc=length(x), byrow=T)
+if (length(names.arg)>0) {colnames(result) = names.arg } 
+rownames(result) = c("frequency","cumul")
+#return(result)
+}
+pareto(res.PCA$eig[,2], h=80)
+```
+
+
+Nous allons maintenant nous intéresser à la description des axes, pour cela nous allons regarder en premier lieu la qualité de représentation des variables.
+```{r}
+kable(round(res.PCA$var$cos2, 2)) %>% column_spec(1, bold = T)
+```
+<br />On peut voir que le Business score est la variable la mieux représentée sur l'axe 1 et l'importation sur l'axe 2. Les scores ne sont cependant pas très élevés. Il sera compliqué d'interpréter le cercle des variables. 
+```{r}
+corrplot(res.PCA$var$cor)
+```
+<br />Comme nous pouvions nous y attendre avec le cercle des variables, l'axe 1 est expliqué par le business score, le PIB, la stabilité politique qui augmentent de gauche à droite et il est anti-corrélé avec le coût d'importation et le taux de croissance de la population. L'axe 2 lui est plutôt bien corrélé avec les variables d'importation, de nourriture et de Distance.  
+Nous pouvons alors regarder si des individus contribuent particulièrement à nos axes.
+
+```{r}
+kable(head(sort(res.PCA$ind$contrib[,1], decreasing = T), 5)) %>% column_spec(1, bold = T) #5 individus les plus contributeurs de l'axe 1
+```
+```{r}
+kable(head(sort(res.PCA$ind$contrib[,2], decreasing = T), 5)) %>% column_spec(1, bold = T) #5 individus les plus contributeurs de l'axe 2
+```
+<br />On peut voir que les Samoa ont un impact fort sur l'axe 2. Il est donc intéressant de voir ce qu'il se produit si nous n'utilisons pas cet individu. En faisant des test via la librairie "Factoshiny", on voit que cela ne change pas suffisamment les résultats  de l'ACP pour le présenter dans notre analyse.  
+Regardons si les individus sont bien représentés sur notre plan.
+
+```{r}
+fviz_pca_ind(res.PCA, col.ind="cos2", geom = "point") + 
+  scale_color_gradient2(low="blue", mid="white",
+                        high="red", midpoint=0.6)
+
+```
+
+On peut voir que les individus au centre sont mal représentés (cos²<0.25) sur ce plan. Heureusement, nous conservons 5 dimensions pour réaliser le clustering.  
+Nous allons maintenant effectuer une classification ascendante hiérarchique en utilisant les coordonnées de l'ACP.
+
+# <a name="C4">Classification ascendante hiérarchique</a>
+```{r}
+res.HCPC <- HCPC(res.PCA, nb.clust=-1, consol=F, graph=FALSE)
+#nb.clust = -1 pour que l'algorithme choisisse automatiquement le nombre de clusters
+#consol: k-means consolidation
+plot(res.HCPC, choice = "bar")
+```
+
+L'algorithme a sélectionné pour nous 5 clusters. Ce nombre de clusters est suffisant pour notre analyse. Comme nous le verrons par la suite, les clusters que nous allons sélectionner n'auraient pas été modifiés en ajoutant d'autres clusters. Regardons un instant l'arbre hiérarchique ainsi construit.
+
+```{r fig.width = 20}
+plot.HCPC(res.HCPC,choice='tree',title='Arbre hiérarchique')
+```
+
+Nous pouvons regarder notre clustering sur le plan factoriel (1,2) ce qui nous donnera une meilleur vue des clusters même si ceux-ci ne seront toujours pas très lisibles.
+```{r fig.width = 20}
+plot.HCPC(res.HCPC, choice = 'map', draw.tree = FALSE, centers.plot= TRUE, title = 'Plan factoriel', axes = c(1,2))
+```
+
+Etant donné que nous travaillions avec des pays, nous pouvons représenter nos clusters sur une mappemonde ce qui sera bien plus facile à "lire".
+
+```{r}
+BDD$groupe_cah <- as.numeric(res.HCPC$data.clust$clust)
+BDDq$groupe_cah <- BDD$groupe_cah
+
+#On créé une palette de couleurs pour la mappemonde
+foo <- brewer.pal(n = 5,name = "Set2") 
+names(foo) = levels(1:5)
+
+Z_Breaks = function(n){
+CUTS = seq(0,1,length.out=n+1)
+rep(CUTS,ifelse(CUTS %in% 0:1,1,2))
+}
+
+colorScale <- data.frame(z=Z_Breaks(5), col=rep(foo,each=2), stringsAsFactors=FALSE)
+
+
+fig <- plot_ly(BDD, type='choropleth', locations = BDD$`Code Pays`, z = BDD$groupe_cah, colorscale=colorScale, colorbar=list(tickvals=seq(1,5), ticktext=names(foo)), hoverinfo = "none", width = "100%") %>% layout(title = '<b>Clusters Classification ascendante hiérarchique</b>')
+fig
+```
+Nous pouvons alors voir que le cluster 1 est constitué en majeur partie de pays Africain, le cluster 2 est composé de l'*Inde* et de la *Chine*, le cluster 3 des pays d’Amérique du sud ainsi que de l'*Australie*, de la *Russie* etc.  
+Le cluster 4 n'est pas visible sur la mappemonde, il est composé d'îles, nous regarderons en détail les pays qui le compose. Enfin, le cluster 5 est constitué de pays européen, du *Canada* et des *Etats Unis*.  
+Regardons en détail le nombre de pays dans chaque cluster.
+```{r}
+freq(res.HCPC$data.clust$clust)
+```
+
+Regardons la liste des pays présents dans le cluster 4.
+```{r}
+kable(BDDq[BDDq$groupe_cah==4,]) %>% kable_paper() %>% column_spec(1, bold = T) %>% scroll_box(width = "100%", height = "100%")
+```
+<br />Nous pouvons regarder quelles variables caractérisent le plus la partition.
+```{r}
+kable(res.HCPC$desc.var$quanti.var) %>% kable_paper() %>% column_spec(1, bold = T)
+```
+La variable qui caractérise le mieux la partition est la variable population. Pour savoir comment catégoriser les clusters, nous allons récupérer les valeurs test des variables pour chaque cluster. Cela nous permettra de faire une heatmap afin de faciliter la lecture de ces résultats.
+```{r}
+BDDq$groupe_cah <- as.character(BDDq$groupe_cah)
+
+clustvtest <- matrix(nrow = 5, ncol = 11)
+colnames(clustvtest) <- c("Coût.import.document", "Coût.import.conformité", "Taux.de.croissance.population", "Population", "Distance", "Importation", "PIB.US$2015", "Production", "Nourriture", "Business.score", "Stabilité.politique")
+for (x in 1:5) {
+  valtest <- as.array(catdes(BDDq[,-c(11,13)], num.var= 12, proba = 1)$quanti[x])
+  #num.var = position de la variable, proba = 1 pour récupérer toutes les vars sinon suppression de celles qui ne respectent pas la condition
+  for (y in colnames(clustvtest)) {
+    clustvtest[x, y] <- valtest[[1]][y, "v.test"]
+  }
+}
+ 
+rownames(clustvtest) <- as.character(1:5)
+pheatmap(clustvtest, 
+         display_numbers = matrix(ifelse(clustvtest > 2 | clustvtest < -2, format(clustvtest, scientific = FALSE, digits = 1), ""), nrow(clustvtest)),
+         legend = TRUE,
+         cluster_rows = FALSE,
+         cluster_cols = FALSE)
+```
+
+
+On remarque 2 clusters qui peuvent nous intérésser:  
+- le cluster 4, qui a une importation de viande de volaille bien plus importante que la moyenne mondiale, une production inférieure et une stabilité politique correcte. Nous appellerons ce cluster le cluster "*Importateur*".  
+- Le cluster 5, qui n'a pas de coût d'import important, est proche de notre pays, un business score élevé et un PIB élevé. Par contre celui-ci produit plus de viande de volaille que la moyenne mondiale. Nous appellerons ce cluster "*Européen*".  
+  
+Comme nous l'avions expliqué au début de la classification ascendante hiérarchique, choisir 6 ou 7 clusters n'auraient pas impacté notre choix étant donné que les clusters retenus n'auraient pas été redécoupés.  
+Nous pouvons maintenant afficher le rapport entre les clusters et les axes.
+
+
+
+```{r}
+res.HCPC$desc.axes
+```
+Enfin nous pouvons afficher les parangons (individu le plus proche du centroïde) et les individus les plus distants des autres clusters.
+```{r}
+res.HCPC$desc.ind
+```
+
+Nous pouvons alors regarder l'effet d'une consolidation via K-means sur notre CAH et conserver le clustering le plus intéressant pour notre analyse.
+
+## <a name="D1">Consolidation via K-Means</a>
+```{r}
+res.HCPC2 <- HCPC(res.PCA, nb.clust=-1, consol=T, graph=FALSE)
+
+BDD$groupe_cah2 <- as.numeric(res.HCPC2$data.clust$clust)
+BDDq$groupe_cah2 <- BDD$groupe_cah2
+
+fig <- plot_ly(BDD, type='choropleth', locations=BDD$`Code Pays`, z=BDD$groupe_cah2, colorscale=colorScale, colorbar=list(tickvals=seq(1,5), ticktext=names(foo)), hoverinfo = "none", width = "100%") %>% layout(title = '<b>Cluster CAH avec consolidation</b>')
+fig
+```
+Nous pouvons voir que notre cluster "*Européen*" a été grandement augmenté, or ce qui nous intéresse dans ce cluster est la faible distance des pays avec la France, l'appartenance à l'espace économique européen qui facilitera les échanges donc nous allons conserver le clustering CAH sans consolidation.
+```{r}
+BDDq$groupe_cah2 <- NULL
+BDD$groupe_cah2 <- NULL
+```
+
+Nous pouvons maintenant regarder les clusters obtenus si nous utilisons uniquement l'algorithme K-Means.
+
+# <a name="C5">K-Means</a>
+Nous allons commencer par regarder le nombre de clusters le plus pertinent pour l'algorithme des K-Means 
+```{r fig.width = 20}
+#évaluer la proportion d'inertie expliquée
+inertie.expl <- rep(0,times=10)
+for (k in 2:10){
+clus <- kmeans(res.PCA$ind$coord,centers=k,nstart=50,iter.max=20)
+inertie.expl[k] <- clus$betweenss/clus$totss
+}
+#graphique
+plot(1:10,inertie.expl,type="b",xlab="Nb. de groupes",ylab="% inertie expliquée")
+#(2) indice de Calinski Harabasz - utilisation du package fpc
+
+#évaluation des solutions
+sol.kmeans <- kmeansruns(res.PCA$ind$coord,krange=2:10,criterion="ch")
+#graphique
+plot(1:10,sol.kmeans$crit,type="b",xlab="Nb. de groupes",ylab="Silhouette")
+
+```
+
+Bien que les indicateurs nous indiquent d'utiliser 6 clusters, afin de comparer les méthodes de clustering entre elles, nous allons utiliser 5 clusters.
+```{r}
+groupes.kmeans <- kmeans(res.PCA$ind$coord, centers = 5, nstart = 50, iter.max = 20)
+print(groupes.kmeans[c("size","centers")])
+```
+
+
+```{r}
+BDD$groupe_kmeans <- groupes.kmeans$cluster
+BDDq$groupe_kmeans <- BDD$groupe_kmeans
+
+fig <- plot_ly(BDD, type='choropleth', locations=BDD$`Code Pays`, z=BDD$groupe_kmeans, colorscale=colorScale, colorbar=list(tickvals=seq(1,5), ticktext=names(foo)), hoverinfo = "none", width = "100%") %>% layout(title = '<b>Cluster K-Means</b>')
+fig
+```
+
+Nous pouvons comparer les clusters entre K-Means et CAH mais nous voyons déjà que nous retiendrons la classification via CAH car celle-ci nous apporte une nouvelle fois un cluster européen plus petit.
+
+
+```{r}
+#Correspondances CAH Kmeans
+print(table(BDD$groupe_cah,groupes.kmeans$cluster))
+```
+Dans cette table, nous pouvons voir que les 2 clusters que nous avions sélectionnés avec CAH (4 et 5) sont plus petits avec CAH:  
+- Pour le cluster 4: 9 pays avec CAH, 13 avec K-Means.  
+- Pour le cluster 5: 35 pays avec CAH, 49 avec K-Means.  
+
+
+```{r}
+BDDq$groupe_kmeans <- as.character(BDDq$groupe_kmeans)
+
+clustvtest <- matrix(nrow = 5, ncol = 11)
+colnames(clustvtest) <- c("Coût.import.document", "Coût.import.conformité", "Taux.de.croissance.population", "Population", "Distance", "Importation", "PIB.US$2015", "Production", "Nourriture", "Business.score", "Stabilité.politique")
+for (x in 1:5) {
+  valtest <- as.array(catdes(BDDq[, -c(11, 13:14)], num.var= 12, proba = 1)$quanti[x])
+  #num.var = position de la variable, proba = 1 pour récupérer toutes les vars sinon suppression de celles qui ne respectent pas la proba
+  for (y in colnames(clustvtest)) {
+    clustvtest[x, y] <- valtest[[1]][y, "v.test"]
+  }
+}
+ 
+rownames(clustvtest) <- as.character(1:5)
+pheatmap(clustvtest, 
+         display_numbers = matrix(ifelse(clustvtest > 2 | clustvtest < -2, format(clustvtest, scientific = FALSE, digits = 1), ""), nrow(clustvtest)),
+         legend = TRUE,
+         cluster_rows = FALSE,
+         cluster_cols = FALSE)
+```
+
+Nous retrouvons les 2 clusters les plus intéressants pour nous, à savoir le cluster dit "*Européen*" qui se caractérise par des coûts d'import faible et une distance faible et un cluster dit "*Importateur*" où l'importation par habitant est la plus élevée.
+
+# <a name="C6">Choix des clusters</a>
+Comme expliqué plus haut, nous allons conserver la classification via CAH et mener notre analyse sur 2 clusters:  
+- Un cluster "*Européen*" où nos exportations seront peu coûteuses car les pays sont proches et, certains faisant partie de l'espace économique européen, il n'y a pas de droit de douane. L'internationalisation sera alors plus facile car moins de documents juridiques. De plus ces pays ayant un PIB par habitant plus élevé que les autres, nous pourrons vendre des produits plus chères.  
+- Un cluster "*Importateur*" où nous allons jouer sur la quantité vendue car ces pays sont de plus grands consommateurs de viande de volaille. Le coût à l'exportation est cependant plus élevé et la distance avec ces pays est grande ce qui peut donner une mauvaise image écologique à l'entreprise.  
+  
+Commençons par regarder le cluster Européen.
+
+## <a name="D2">Choix du cluster *Européen*</a>
+Nous allons de nouveau effectuer une ACP afin de faire une sélection plus fine des candidats de ce cluster.
+```{r fig.width = 20}
+Choix1 <- BDDq[BDDq$groupe_cah==5, -c(14:15)]
+res.pca=PCA(Choix1, scale.unit=T, graph = F, quali.sup = c(11,13))
+plot.PCA(res.pca,choix='var',title="Graphe des variables de l'ACP")
+```
+
+On peut voir que l'axe 1 est corrélé avec les coûts d'importation, la quantité de viande de volaille consommée, la distance et est anti-corrélé avec l'importation. L'axe 2 lui est corrélé avec la stabilité politique, le PIB, le business score. Nous choisirons alors les individus qui sont dans la partie supérieur gauche du cercle.
+
+```{r fig.width = 20}
+plot.PCA(res.pca,invisible=c('quali','ind.sup'), habillage = c(11,13), title="Graphe des individus de l'ACP",label =c('ind'))
+```
+
+```{r}
+kable(Choix1[order(Choix1$Importation, decreasing = T),]) %>% kable_paper() %>% column_spec(1, bold = T) %>% scroll_box(width = "100%", height = "400px", fixed_thead = T)
+```
+```{r}
+liste_pays <- rownames(res.pca$ind$coord[res.pca$ind$coord[,1]<0 & res.pca$ind$coord[,2]>0,])
+
+kable(BDDq[rownames(BDDq) %in% liste_pays, c("Importation", "Business score", "PIB US$2015", "Stabilité politique", "Population")]) %>%
+kable_paper() %>% column_spec(1, bold = T)
+```
+La représentation des pays est en accord avec les données brutes.  
+Si nous devons faire un choix plus précis dans le cluster "*Européen*" pour savoir quels sont nos meilleurs candidats, nous pourrons sélectionner le Luxembourg ou la Belgique qui ont l'avantage de parler français et de faire partie de l'espace économique européen. Si nous souhaitons plus de candidats, nous pouvons ajouter les *Pays-Bas*, le *Danemark*, la *Suède*, l'*Autriche*.<br />  
+
+Regardons maintenant les meilleurs candidats du cluster "*Importateur*".
+
+
+## <a name="D3">Choix du cluster *Importateur*</a>
+
+```{r fig.width = 20}
+Choix2 <- BDDq[BDDq$groupe_cah==4, -c(14:15)]
+res.pca=PCA(Choix2, scale.unit=T, graph = F, quali.sup = c(11,13))
+plot.PCA(res.pca,choix='var',title="Graphe des variables de l'ACP")
+
+```
+
+L'axe 1 est corrélé avec le PIB, la population, le business score et anti-corrélé avec la stabilité politique. L'axe 2 lui est corrélé aux coûts d'importation et anti-corrélé à l'importation. Il faut donc faire un arbitrage entre des pays plutôt riches avec un business score élevé mais moyennement stable politiquement et le contraire. Nous ferons le choix ici de conserver les pays riches et importateurs.
+
+```{r fig.width = 20}
+plot.PCA(res.pca,invisible=c('quali','ind.sup'), habillage = c(11,13), title="Graphe des individus de l'ACP",label =c('ind'))
+```
+
+Le seul pays correspondant à nos critère est Honk Kong. Il semble être le meilleur candidat de ce cluster. Vérifions cela avec les données brutes.
+
+```{r}
+kable(Choix2[order(Choix2$Importation, decreasing = T), c("Importation", "Business score", "PIB US$2015", "Coût import conformité", "Coût import document", "Stabilité politique", "Population", "Distance")]) %>%
+kable_paper() %>% column_spec(1, bold = T)
+```
+
+On peut voir que Honk Kong est bien le pays le plus importateur de ce cluster mais c'est également celui ayant le plus grand business score et PIB. Sa population est également la deuxième plus grande du cluster. Honk Kong est donc le meilleur candidat de ce cluster.<br />Les Emirats Arabes Unis sont également un bon candidat si nous accordons moins d'importance à l'importation.

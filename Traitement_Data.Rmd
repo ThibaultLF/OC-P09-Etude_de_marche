@@ -1,0 +1,288 @@
+---
+title: 'Projet 9:<br /> Produisez une étude de marché avec R'
+author: "*Thibault Lelievre*"
+output: html_notebook
+---
+
+<style>
+
+body {
+text-align: justify;
+}
+
+.title.toc-ignore{
+text-align: center;
+color: blue;
+border: 1px blue solid;
+}
+
+.author {
+text-align: right;
+color: #5BA8E1;
+}
+
+h1 a{
+color: black;
+}
+
+h2 a{
+color: black;
+margin-left: 50px;
+}
+
+td:first-child{
+position: sticky;
+left: 0;
+background-color: #FFFFFF;
+z-index: 20;
+}
+</style>
+
+
+
+```{r include=FALSE}
+library(readxl)
+library(knitr)
+library(kableExtra)
+```
+
+# Scénario
+Vous travaillez chez *La poule qui chante*, une entreprise française agroalimentaire. Elle souhaite se développer à l'international. Votre objectif sera de proposer une première analyse des groupements de pays que l'on peut cibler pour exporter nos poulets. Pour cela, il faudra récupérer des données supplémentaires à celles fournies provenant de la FAO.
+
+Pour la partie analyse, il est demandé d'utiliser la classification ascendante hiérarchique, avec un dendrogramme comme visualisation, et également la méthode des k-means pour comparer les résultats des deux méthodes de clustering. Il est également possible de réaliser une ACP.  
+
+Nous allons dans ce premier notebook faire le traitement des données récupérées sur les sites de la [FAO](https://www.fao.org/faostat/en/#data), de la [World Bank](https://databank.worldbank.org/source/world-development-indicators) et du [CEPII](http://www.cepii.fr/CEPII/fr/bdd_modele/bdd_modele.asp).
+
+# Sommaire
+ - <a href="#C1">Importation des données</a>
+ - <a href="#C2">Analyse primaire</a> 
+ <ol>
+     <li> <a href="#D1">Disponibilité alimentaire</a> </li>
+     <li> <a href="#D2">Stabilité politique</a> </li>
+     <li> <a href="#D3">Data_WB</a> </li>
+     <li> <a href="#D4">Nom_pays</a> </li>
+     <li> <a href="#D5">Distance</a> </li>
+</ol>
+- <a href="#C3">Jointure</a> 
+- <a href="#C4">Réglages et exportations</a>
+
+# <a name="C1">Importation des données</a>
+Pour l'importation des données, nous utilisons un chemin relatif. Veillez à bien mettre les fichiers de données dans un dossier nommé *Données* situé dans le dossier où est sauvegardé le fichier R(.rmd).
+```{r}
+Dispo_alim <- read.csv("Données/FAOSTAT_DispoAlim_2019.csv")
+iso3 <- read.csv("Données/FAOSTAT_iso3.csv")
+Stability <- read_xlsx("Données/PoliticalStability.xlsx")
+Data_WB <- read_xlsx("Données/Data_Extract_From_World_Development_Indicators.xlsx")
+Distance <- read_xls("Données/dist_cepii.xls")
+Nom_Pays <- read_xls("Données/geo_cepii.xls")
+```
+
+# <a name="C2">Analyse primaire</a> 
+## <a name="D1">1. Disponibilité alimentaire</a>
+Pour commencer, regardons les différentes variables disponibles dans le fichier.
+```{r}
+kable(summary(Dispo_alim)) %>% kable_paper() %>% scroll_box(width = "100%")
+kable(unique(Dispo_alim$Item)) %>% scroll_box(height = "200px")
+```
+<br />
+Pour cette étude, nous n'aurons besoin que de la viande de volaille, en ne conservant que sa production, son importation, son exportation et la quantité consommée. Nous allons également supprimer les colonnes sans intérêt.
+
+```{r}
+Dispo_alim <- Dispo_alim[Dispo_alim$Item == "Poultry Meat" & (Dispo_alim$Element == "Production" | Dispo_alim$Element == "Import Quantity"| Dispo_alim$Element == "Food"| Dispo_alim$Element == "Export Quantity"),c("Area", "Element", "Value")] 
+Dispo_alim <- setNames(reshape(Dispo_alim, direction = "wide", idvar = "Area", timevar = "Element", v.names = "Value"), c("Area", unique(Dispo_alim$Element)))
+```
+<br />
+Regardons maintenant les données manquantes.
+```{r}
+apply(Dispo_alim, 2, function(x){sum(is.na(x))})
+```
+<br />
+Nous ne conserverons pas la variable "Export Quantity" car celle-ci présentent trop de données manquantes. Regardons pour la production et l'importation les pays concernés. 
+
+```{r}
+Dispo_alim[is.na(Dispo_alim$Production) | is.na(Dispo_alim$`Import Quantity`),] 
+```
+<br />
+En regardant les données disponibles sur internet, nous pouvons nous rendre compte que pour *Djibouti* l'importation est égale à la quantité consommée, qu'il n'y a pas d'exportation, ce qui laisse penser qu'il n'y a pas de production de viande de volaille dans ce pays ou que celle-ci est infime. Pour les *Maldives*, cela semble être la même chose. Nous réglerons donc la production de ces pays à 0.  
+L'importation de viande de volaille en Afrique aurait pratiquement tué les producteurs locaux dans certains pays ce qui explique le fait de ne pas avoir de données. Certains pays Africains ont donc adopté des mesures pour favoriser la viande locale telles que des taxes à l'importation ou l'interdiction totale d'importation.  
+Pour le *Venezuela*, la quantité importée en 2018 était de 3000 tonnes et selon le site [knoema](https://knoema.fr/atlas/Venezuela-R%c3%a9publique-bolivarienne-du/topics/Agriculture/Commerce-Quantit%c3%a9-dimportation/Viande-de-volaille), ce montant était de 4700 tonnes en 2020. Nous pouvons donc faire une imputation de la quantité importée en prenant la valeur de 2018 pour 2019.
+
+```{r}
+Dispo_alim[Dispo_alim$Area == "Djibouti" | Dispo_alim$Area == "Maldives", "Production"] = 0
+Dispo_alim[Dispo_alim$Area == "Venezuela (Bolivarian Republic of)", "Import Quantity"] = 3 #On est en milliers de tonnes.
+Dispo_alim$`Export Quantity` <- NULL
+```
+<br />
+Nous allons ajouter les codes ISO3 aux pays de la FAO afin de permettre des jointures plus simples avec le reste des bases de données.
+```{r}
+Dispo_alim <- merge(Dispo_alim, iso3[c("Country", "ISO3.Code")], by.x = "Area", by.y = "Country", all.x = TRUE )
+colnames(Dispo_alim)[names(Dispo_alim)=="ISO3.Code"] <- "Country Code"
+pays <- Dispo_alim$`Country Code`
+```
+
+
+## <a name="D2">2. Stabilité politique</a>
+Nous allons commencer par regarder les données manquantes dans ce fichier.
+```{r}
+Stability[Stability$Time == 2019 & is.na(Stability$`Political Stability and Absence of Violence/Terrorism: Estimate`),]
+```
+<br />
+Les *Antilles Néerlandaises* ont été dissoutes en 2010, nous pouvons donc supprimer cette ligne et conserver uniquement l'année 2019.
+```{r}
+Stability <- Stability[!Stability$`Country Name` == "Netherlands Antilles" & Stability$Time == 2019,]
+Stability$Time <- NULL
+```
+
+## <a name="D3">3. Data_WB</a>
+
+
+Regardons la compatibilité entre la base de données FAO et World Bank.
+```{r}
+Dispo_alim[!Dispo_alim$`Country Code` %in% Data_WB$`Country Code`,] #Pays de Dispo_alim non présents dans Data_WB
+unique(Data_WB[!Data_WB$`Country Code` %in% Dispo_alim$`Country Code`,c("Country Code", "Country Name")]) #Pays de Data_WB non présents dans Dispo_alim
+```
+
+
+```{r}
+Data_WB <- Data_WB[Data_WB$`Country Code` %in% pays,] #Suppression des pays qui ne font pas partie des données de la FAO
+
+Data_WB[Data_WB == ".."] <- NA #On remplace les .. par NA
+
+nom <- names(Data_WB[5:26]) #On récupère le nom des colonnes 2000-2021
+
+resultat <- matrix(nrow = 12, ncol = 22) #Création d'une matrice pour stocker le nombre de valeurs manquantes
+
+colnames(resultat) <- nom #On renomme le nom des colonnes
+
+row.names(resultat) <- unique(Data_WB$`Series Name`) #On renomme le nom des lignes
+
+for (i in seq_along(nom)){
+  res <- by(Data_WB[nom[i]], Data_WB["Series Name"], function(x){sum(is.na(x))}) #On compte le nombre de valeurs manquantes pour chaque sous groupe à l'année donnée.
+  for (x in unique(Data_WB$`Series Name`)){
+    resultat[x, nom[i]] <- res[x] #On enregistre dans la matrice résultat.
+  }
+}
+kable(resultat) %>% kable_paper() %>% column_spec(1, bold = T) %>% scroll_box(width = "100%", height = "400px", fixed_thead = TRUE) 
+```
+<br />
+On ne va conserver que les séries où il y a moins de 30 valeurs manquantes.
+Pour les données de "Logistics performance index", nous allons utiliser celles de 2018 et non 2019.
+
+```{r}
+#On ne conserve que les séries qui nous intéressent:
+Data_WB <- Data_WB[Data_WB$`Series Name` == "Population growth (annual %)" | Data_WB$`Series Name` == "Population, total" | Data_WB$`Series Name` == "Ease of doing business score (0 = lowest performance to 100 = best performance)" | Data_WB$`Series Name` == "GDP (constant 2015 US$)" | Data_WB$`Series Name` == "Cost to import, border compliance (US$)" | Data_WB$`Series Name` == "Cost to import, documentary compliance (US$)" | Data_WB$`Series Name` == "GDP, PPP (constant 2017 international $)" | Data_WB$`Series Name` == "Logistics performance index: Quality of trade and transport-related infrastructure (1=low to 5=high)",]
+
+#On remplace les valeurs manquantes de 2019 par les valeurs de 2018
+Data_WB[is.na(Data_WB$`2019 [YR2019]`), "2019 [YR2019]"] <- Data_WB[is.na(Data_WB$`2019 [YR2019]`), "2018 [YR2018]"]
+
+#On ne conserve que l'année 2019 et reshape Data_WB
+Data_WB <- as.data.frame(Data_WB)
+Data_WB <- Data_WB[,c("Country Name", "Country Code", "Series Name", "2019 [YR2019]")]
+Data_WB <- reshape(Data_WB, direction = "wide", idvar = c("Country Name", "Country Code"), timevar = "Series Name")
+colnames(Data_WB) <- gsub("2019 \\[YR2019\\]\\.", "", colnames(Data_WB))
+dim(Data_WB)
+```
+
+
+## <a name="D4">4. Nom_pays</a>
+On rajoute une colonne pour les pays faisant partie de l'espace économique européen.
+```{r}
+Nom_Pays$EEE <- 0
+Nom_Pays[Nom_Pays$iso2 %in% c("BE","BG","CZ","DK","CY","LV","LT","LU","ES","FR","HR","IT","PL","PT","RO","SI","HU","MT","NL","AT","IS","LI","NO","SK","FI","SE","DE","EE","IE","EL"), "EEE"] <- 1
+```
+
+
+## <a name="D5">5. Distance</a>
+
+```{r}
+Distance <- Distance[Distance$iso_o == "FRA",]
+Distance <- Distance[,c("iso_d", "comlang_off", "dist")]
+Distance <- merge(Distance, Nom_Pays[,c("pays","iso3", "EEE")], by.x = "iso_d", by.y = "iso3", all.x = T)
+Distance <- Distance[!duplicated(Distance),]
+
+#Correction de certains ISO qui ne sont plus corrects.
+Distance[Distance$iso_d == "ZAR", "iso_d"] <- "COD"
+Distance[Distance$iso_d == "TMP", "iso_d"] <- "TLS"
+Distance[Distance$iso_d == "ROM", "iso_d"] <- "ROU"
+Distance[Distance$iso_d == "YUG", "iso_d"] <- "SRB"
+```
+
+
+# <a name="C3">Jointure</a>
+```{r}
+Data_WB <- merge(Data_WB, Stability, by = "Country Name", all.x = TRUE)
+Data_WB[is.na(Data_WB$`Political Stability and Absence of Violence/Terrorism: Estimate`),]
+```
+
+Il manque ici 2 territoires français. Nous ferons l'impasse sur ces territoires.
+
+```{r}
+BDD <- merge(Dispo_alim, Data_WB, by = "Country Code", all = TRUE)
+
+BDD <- merge(BDD, Distance, by.x = "Country Code", by.y = "iso_d", all.x = TRUE)
+
+BDD[BDD$`Country Code` == "MNE", c("comlang_off", "dist")] <- BDD[BDD$`Country Code` == "SRB", c("comlang_off", "dist")] #On a remplacé l'ex Yougoslavie par la Serbie dans Distance donc on attribue les mêmes valeurs au Monténégro.
+BDD[BDD$`Country Code`=="SRB", "pays"] <- "Serbie"
+BDD[BDD$`Country Code`=="MNE", "pays"] <- "Monténégro"
+BDD[BDD$`Country Code`=="MNE", "EEE"] <- 0
+
+kable(apply(BDD, 2, function(x){sum(is.na(x))})) %>% kable_paper() %>% column_spec(1, bold = T) %>% scroll_box(height = "400px") 
+```
+<br />
+Nous retrouvons les 2 valeurs manquantes "China Mainland" et "China Taiwan" qui n'étaient pas présentes dans la BDD de la WB. Nous allons les supprimer et regarder les autres valeurs manquantes.
+
+```{r}
+BDD <- BDD[!is.na(BDD$`Country Name`),]
+BDD$`Country Name` <- NULL
+rm(list =setdiff(ls(), "BDD")) #On ne conserve que la BDD créé dans la mémoire de R.
+
+
+Liste_pays <- list()
+for (x in colnames(BDD[,-c(1:7, 15:18)])) {
+  Liste_pays[[x]] <-  BDD[is.na(BDD[x]), c("Country Code")]
+}
+Liste_pays
+```
+<br />
+Nous allons supprimer les pays en valeur manquante de la série du PIB constant $US 2015 et de la série des coûts d'importation.
+
+```{r}
+BDD <- BDD[!BDD$`Country Code` %in% Liste_pays$`GDP (constant 2015 US$)`,]
+BDD <- BDD[!BDD$`Country Code` %in% Liste_pays$`Cost to import, border compliance (US$)`,]
+BDD <- BDD[!BDD$`Country Code` == "FRA",] #On supprime la France
+kable(apply(BDD, 2, function(x){sum(is.na(x))})) %>% kable_paper() %>% column_spec(1, bold = T) %>% scroll_box(height = "400px")
+```
+
+```{r}
+BDD[BDD$`Import Quantity` == 0, "pays"]
+```
+<br />
+Le seul pays de cette liste qui semble avoir une loi interdisant l'importation de viande est le Sénégal. Nous le supprimerons de notre analyse.
+
+# <a name="C4">Réglages et exportations</a>
+```{r}
+BDD[, c("Logistics performance index: Quality of trade and transport-related infrastructure (1=low to 5=high)", "GDP, PPP (constant 2017 international $)")] <- NULL
+BDD <- BDD[!BDD$pays == "Sénégal",]
+
+#On transforme les colonnes numériques dans le bon format si ce n'est pas le cas.
+for (x in colnames(BDD[, -c(1:2, 15)] )) {
+  BDD[,x] <- as.numeric(BDD[,x])
+}
+
+BDD <- BDD[, c(15, 1:14, 16)]
+BDDind <- BDD #Base ou certaines variables seront divisées par la population.
+
+#Division des variables influencées par la population
+BDDind[,c("Production", "Import Quantity", "Food")] <- (BDDind[,c("Production", "Import Quantity", "Food")] * 1000)/BDDind$`Population, total`
+BDDind$`GDP (constant 2015 US$)` <- BDDind$`GDP (constant 2015 US$)`/BDDind$`Population, total`
+
+write.csv(BDD, "Données/BDDnoscale.csv", row.names = FALSE) #Export
+write.csv(BDDind, "Données/BDDindnoscale.csv", row.names = FALSE)
+
+
+BDD[, -c(1:3, 14, 16)] <- scale(BDD[, -c(1:3, 14, 16)], center = TRUE, scale = TRUE) #On centre réduit les variables numériques
+BDDind[, -c(1:3, 14, 16)] <- scale(BDDind[, -c(1:3, 14, 16)], center = TRUE, scale = TRUE)
+
+write.csv(BDD, "Données/BDD.csv", row.names = FALSE) #Export
+write.csv(BDDind, "Données/BDDind.csv", row.names = FALSE)
+```
